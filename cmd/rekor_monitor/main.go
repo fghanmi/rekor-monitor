@@ -27,6 +27,7 @@ import (
 	"github.com/sigstore/rekor-monitor/pkg/notifications"
 	rekor_v1 "github.com/sigstore/rekor-monitor/pkg/rekor/v1"
 	rekor_v2 "github.com/sigstore/rekor-monitor/pkg/rekor/v2"
+	"github.com/sigstore/rekor-monitor/pkg/server"
 	"github.com/sigstore/rekor-monitor/pkg/util/file"
 	"github.com/sigstore/rekor/pkg/client"
 	"github.com/sigstore/rekor/pkg/generated/models"
@@ -120,6 +121,11 @@ func main() {
 	if flags.LogInfoFile == "" {
 		logInfoFileName := fmt.Sprintf("%s.v%d.txt", logInfoFileNamePrefix, rekorVersion)
 		flags.LogInfoFile = logInfoFileName
+	}
+	if !flags.Once {
+		if err := server.StartMetricsServer(flags.MonitorPort); err != nil {
+			log.Fatalf("Failed to start Prometheus metrics server: %v", err)
+		}
 	}
 	switch rekorVersion {
 	case 1:
