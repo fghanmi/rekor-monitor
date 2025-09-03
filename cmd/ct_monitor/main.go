@@ -29,7 +29,6 @@ import (
 	"github.com/sigstore/rekor-monitor/pkg/ct"
 	"github.com/sigstore/rekor-monitor/pkg/identity"
 	"github.com/sigstore/rekor-monitor/pkg/notifications"
-	"github.com/sigstore/rekor-monitor/pkg/server"
 	"github.com/sigstore/rekor-monitor/pkg/util/file"
 )
 
@@ -60,11 +59,6 @@ func main() {
 		logInfoFileName := fmt.Sprintf("%s.txt", logInfoFileName)
 		flags.LogInfoFile = logInfoFileName
 	}
-	if !flags.Once {
-		if err := server.StartMetricsServer(flags.MonitorPort); err != nil {
-			log.Fatalf("Failed to start Prometheus metrics server: %v", err)
-		}
-	}
 
 	fulcioClient, err := ctclient.New(flags.ServerURL, http.DefaultClient, jsonclient.Options{
 		UserAgent: flags.UserAgent,
@@ -89,6 +83,7 @@ func main() {
 		Config:                   config,
 		MonitoredValues:          monitoredValues,
 		Once:                     flags.Once,
+		MonitorPort:              flags.MonitorPort,
 		NotificationContextNewFn: CreateCTMonitorNotificationContext,
 		RunConsistencyCheckFn: func(_ context.Context) (cmd.Checkpoint, cmd.LogInfo, error) {
 			prev, cur, err := ct.RunConsistencyCheck(fulcioClient, flags.LogInfoFile)

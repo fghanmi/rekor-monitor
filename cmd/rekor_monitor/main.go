@@ -27,7 +27,6 @@ import (
 	"github.com/sigstore/rekor-monitor/pkg/notifications"
 	rekor_v1 "github.com/sigstore/rekor-monitor/pkg/rekor/v1"
 	rekor_v2 "github.com/sigstore/rekor-monitor/pkg/rekor/v2"
-	"github.com/sigstore/rekor-monitor/pkg/server"
 	"github.com/sigstore/rekor-monitor/pkg/util/file"
 	"github.com/sigstore/rekor/pkg/client"
 	"github.com/sigstore/rekor/pkg/generated/models"
@@ -122,11 +121,6 @@ func main() {
 		logInfoFileName := fmt.Sprintf("%s.v%d.txt", logInfoFileNamePrefix, rekorVersion)
 		flags.LogInfoFile = logInfoFileName
 	}
-	if !flags.Once {
-		if err := server.StartMetricsServer(flags.MonitorPort); err != nil {
-			log.Fatalf("Failed to start Prometheus metrics server: %v", err)
-		}
-	}
 	switch rekorVersion {
 	case 1:
 		mainLoopV1(flags, config, trustedRoot)
@@ -171,6 +165,7 @@ func mainLoopV1(flags *cmd.MonitorFlags, config *notifications.IdentityMonitorCo
 		Config:                   config,
 		MonitoredValues:          monitoredValues,
 		Once:                     flags.Once,
+		MonitorPort:              flags.MonitorPort,
 		NotificationContextNewFn: CreateRekorMonitorNotificationContext,
 		RunConsistencyCheckFn: func(_ context.Context) (cmd.Checkpoint, cmd.LogInfo, error) {
 			prev, cur, err := rekor_v1.RunConsistencyCheck(rekorClient, verifier, flags.LogInfoFile)

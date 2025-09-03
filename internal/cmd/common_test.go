@@ -136,6 +136,13 @@ func validateMonitoredValues(t *testing.T, actual, expected notifications.Config
 	}
 }
 
+// patchExit patches exitFunc for tests and tracks if it was called
+func patchExit(called *bool) func() {
+	orig := exitFunc
+	exitFunc = func(int) { *called = true }
+	return func() { exitFunc = orig }
+}
+
 func TestLoadMonitorConfig(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -558,7 +565,9 @@ func TestMonitorLoop_BasicExecution(t *testing.T) {
 }
 
 func TestMonitorLoop_ConsistencyCheckError(t *testing.T) {
-	// Test that MonitorLoop handles consistency check errors correctly
+	var calledExit bool
+	defer patchExit(&calledExit)()
+
 	consistencyCheckCalled := false
 
 	params := MonitorLoopParams{
@@ -594,6 +603,9 @@ func TestMonitorLoop_ConsistencyCheckError(t *testing.T) {
 
 	if !consistencyCheckCalled {
 		t.Error("RunConsistencyCheckFn was not called")
+	}
+	if !calledExit {
+		t.Error("exitFunc was not called on consistency check failure with Once=true")
 	}
 }
 
@@ -659,7 +671,9 @@ func TestMonitorLoop_NoMonitoredValues(t *testing.T) {
 }
 
 func TestMonitorLoop_InvalidIndexRange(t *testing.T) {
-	// Test that MonitorLoop handles invalid index ranges correctly
+	var calledExit bool
+	defer patchExit(&calledExit)()
+
 	consistencyCheckCalled := false
 	identitySearchCalled := false
 
@@ -700,6 +714,9 @@ func TestMonitorLoop_InvalidIndexRange(t *testing.T) {
 	}
 	if identitySearchCalled {
 		t.Error("IdentitySearchFn should not be called when start index > end index")
+	}
+	if !calledExit {
+		t.Error("exitFunc was not called on invalid index range with Once=true")
 	}
 }
 
@@ -855,10 +872,10 @@ func TestMonitorLoop_NoPreviousCheckpoint(t *testing.T) {
 	// Run MonitorLoop
 	MonitorLoop(params)
 
-	if consistencyCheckCalled != 4 {
+	if consistencyCheckCalled != 5 {
 		t.Errorf("Expected 4 consistency check calls, got %d", consistencyCheckCalled)
 	}
-	if identitySearchCalled != 3 {
+	if identitySearchCalled != 4 {
 		t.Errorf("Expected 3 identity search calls, got %d", identitySearchCalled)
 	}
 	if !writeCheckpointCalled {

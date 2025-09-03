@@ -20,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"runtime"
@@ -54,6 +55,7 @@ type MonitorLoopParams struct {
 	Config                   *notifications.IdentityMonitorConfiguration
 	MonitoredValues          identity.MonitoredValues
 	Once                     bool
+	MonitorPort              int
 	NotificationContextNewFn notifications.NotificationContextNew
 	RunConsistencyCheckFn    func(ctx context.Context) (Checkpoint, LogInfo, error)
 	WriteCheckpointFn        func(prev Checkpoint, cur LogInfo) error
@@ -62,15 +64,13 @@ type MonitorLoopParams struct {
 	IdentitySearchFn         func(ctx context.Context, config *notifications.IdentityMonitorConfiguration, monitoredValues identity.MonitoredValues) ([]identity.MonitoredIdentity, []identity.FailedLogEntry, error)
 }
 
-var (
-	once = flag.Bool("once", true, "whether to run the monitor on a repeated interval or once")
-)
+var exitFunc = os.Exit
 
-func handleError(msg string, err error) {
+func handleError(msg string, err error, once bool) {
 	errWrap := errors.Join(errors.New(msg), err)
 	fmt.Fprint(os.Stderr, errWrap, "\n")
 
-	if !*once {
+	if !once {
 		errStr := errWrap.Error()
 		// // These specific messages are expected in normal operation and are not treated as consistency check failures.
 		// // Therefore, they are excluded from Prometheus failure metrics.
@@ -80,7 +80,7 @@ func handleError(msg string, err error) {
 		}
 		server.IncLogIndexVerificationFailure()
 	} else {
-		os.Exit(1)
+		exitFunc(1)
 	}
 }
 
@@ -91,6 +91,7 @@ type LogInfo interface{}
 func ParseMonitorFlags(defaultServerURL, defaultTUFRepository string, baseUserAgentName string) *MonitorFlags {
 	configFilePath := flag.String("config-file", "", "path to yaml configuration file containing identity monitor settings")
 	configYamlInput := flag.String("config", "", "string with YAML configuration containing identity monitor settings")
+	once := flag.Bool("once", true, "whether to run the monitor on a repeated interval or once")
 	logInfoFile := flag.String("file", "", "path to the initial log info checkpoint file to be read from")
 	serverURL := flag.String("url", defaultServerURL, "URL to the server that is to be monitored")
 	interval := flag.Duration("interval", 5*time.Minute, "Length of interval between each periodical consistency check")
@@ -193,6 +194,12 @@ func MonitorLoop(params MonitorLoopParams) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if !params.Once {
+		if err := server.StartMetricsServer(ctx, params.MonitorPort); err != nil {
+			log.Fatalf("Failed to start Prometheus metrics server: %v", err)
+		}
+	}
+
 	config := params.Config
 
 	// To get an immediate first tick, for-select is at the end of the loop
@@ -203,10 +210,11 @@ func MonitorLoop(params MonitorLoopParams) {
 
 		prevCheckpoint, curCheckpoint, err := params.RunConsistencyCheckFn(ctx)
 		if err != nil {
-			handleError("error running consistency check", err)
-			if !*once {
+			handleError("error running consistency check", err, params.Once)
+			if !params.Once {
 				goto waitForTick
 			}
+			return
 		}
 
 		if identity.MonitoredValuesExist(params.MonitoredValues) {
@@ -214,10 +222,11 @@ func MonitorLoop(params MonitorLoopParams) {
 				if prevCheckpoint != nil {
 					config.StartIndex = params.GetStartIndexFn(prevCheckpoint, curCheckpoint)
 				} else {
-					handleError("no start index set and no log checkpoint", nil)
-					if !*once {
+					handleError("no start index set and no log checkpoint", nil, params.Once)
+					if !params.Once {
 						goto waitForTick
 					}
+					return
 				}
 			}
 
@@ -227,18 +236,20 @@ func MonitorLoop(params MonitorLoopParams) {
 
 			if config.StartIndex != nil && config.EndIndex != nil {
 				if *config.StartIndex > *config.EndIndex {
-					handleError(fmt.Sprintf("start index %d must be less or equal than end index %d", *config.StartIndex, *config.EndIndex), nil)
-					if !*once {
+					handleError(fmt.Sprintf("start index %d must be less or equal than end index %d", *config.StartIndex, *config.EndIndex), nil, params.Once)
+					if !params.Once {
 						goto waitForTick
 					}
+					return
 				}
 
 				foundEntries, failedEntries, err := params.IdentitySearchFn(ctx, config, params.MonitoredValues)
 				if err != nil {
-					handleError("failed to successfully complete identity search", err)
-					if !*once {
+					handleError("failed to successfully complete identity search", err, params.Once)
+					if !params.Once {
 						goto waitForTick
 					}
+					return
 				}
 
 				if len(foundEntries) > 0 || len(failedEntries) > 0 {
@@ -294,9 +305,6 @@ func MonitorLoop(params MonitorLoopParams) {
 			continue
 		case <-ctx.Done():
 			fmt.Fprintf(os.Stderr, "Shutting down gracefully...")
-			return
-		case <-server.GetSignalChan():
-			fmt.Fprintf(os.Stderr, "received signal, exiting")
 			return
 		}
 	}

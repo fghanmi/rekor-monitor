@@ -15,23 +15,23 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // TestStartMetricsServer verifies that the metrics server starts and serves the /metrics endpoint.
 func TestStartMetricsServer(t *testing.T) {
-	// Use a unique port to avoid conflicts
 	port := 9465
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
 	go func() {
-		if err := StartMetricsServer(port); err != nil {
+		if err := StartMetricsServer(ctx, port); err != nil {
 			t.Errorf("StartMetricsServer failed: %v", err)
 		}
 	}()
@@ -44,27 +44,15 @@ func TestStartMetricsServer(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status code 200, got %d", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "log_index_verification_total") ||
+		!strings.Contains(string(body), "log_index_verification_failure") {
+		t.Errorf("metrics missing:\n%s", body)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-
-	if !contains(string(body), "log_index_verification_total") {
-		t.Errorf("Expected metric log_index_verification_total in response, not found")
-	}
-	if !contains(string(body), "log_index_verification_failure") {
-		t.Errorf("Expected metric log_index_verification_failure in response, not found")
-	}
-
-	// Send SIGTERM to trigger graceful shutdown
-	signalChan := GetSignalChan()
-	signalChan <- os.Interrupt
-
-	time.Sleep(100 * time.Millisecond)
+	// Cancel context to shutdown server
+	cancel()
+	time.Sleep(50 * time.Millisecond)
 
 	_, err = http.Get(fmt.Sprintf("http://localhost:%d/metrics", port))
 	if err == nil {
@@ -74,38 +62,56 @@ func TestStartMetricsServer(t *testing.T) {
 
 // TestIncLogIndexVerificationTotal verifies that the total verification counter increments correctly.
 func TestIncLogIndexVerificationTotal(t *testing.T) {
-	// Reset registry to isolate test
-	InitRegistryForTesting()
+	port := 9471
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 
-	initialValue := testutil.ToFloat64(GetLogIndexVerificationTotal())
+	go StartMetricsServer(ctx, port)
+	time.Sleep(100 * time.Millisecond)
 
+	// Increment
 	IncLogIndexVerificationTotal()
 
-	newValue := testutil.ToFloat64(GetLogIndexVerificationTotal())
-	if newValue != initialValue+1 {
-		t.Errorf("Expected counter to increment by 1, got %f (initial: %f)", newValue, initialValue)
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/metrics", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "log_index_verification_total 1") {
+		t.Errorf("expected counter incremented, got:\n%s", body)
 	}
 }
 
 // TestIncLogIndexVerificationFailure verifies that the failure counter increments correctly.
 func TestIncLogIndexVerificationFailure(t *testing.T) {
-	InitRegistryForTesting()
+	port := 9472 // unique port to avoid conflicts
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 
-	initialValue := testutil.ToFloat64(GetLogIndexVerificationFailure())
+	go StartMetricsServer(ctx, port)
+	time.Sleep(100 * time.Millisecond)
 
+	// Increment the failure counter
 	IncLogIndexVerificationFailure()
 
-	newValue := testutil.ToFloat64(GetLogIndexVerificationFailure())
-	if newValue != initialValue+1 {
-		t.Errorf("Expected counter to increment by 1, got %f (initial: %f)", newValue, initialValue)
+	// Fetch metrics
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/metrics", port))
+	if err != nil {
+		t.Fatalf("Failed to query /metrics: %v", err)
 	}
-}
+	defer resp.Body.Close()
 
-// TestGetSignalChan verifies that GetSignalChan returns a non-nil channel.
-func TestGetSignalChan(t *testing.T) {
-	signalChan := GetSignalChan()
-	if signalChan == nil {
-		t.Error("Expected non-nil signal channel, got nil")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+	b := string(body)
+
+	// Assert counter incremented
+	if !strings.Contains(b, "log_index_verification_failure 1") {
+		t.Errorf("expected failure counter incremented, got:\n%s", b)
 	}
 }
 
